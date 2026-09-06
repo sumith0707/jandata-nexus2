@@ -1,0 +1,8 @@
+img2table
+pytesseract
+pandas
+rapidfuzz
+fastapi
+uvicorn
+python-docx
+google-genai
