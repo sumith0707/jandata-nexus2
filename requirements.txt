@@ -5,4 +5,4 @@ rapidfuzz
 fastapi
 uvicorn
 python-docx
-google-genai
+groq
