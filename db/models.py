@@ -1,49 +1,62 @@
 """
-SQLite schema for validated data. One table, long format — every row is
-one (entity, year, indicator) observation with full provenance.
+Supabase (Postgres) storage for validated observations.
 
-entity_type lets you tell districts apart from other row types (crop
-categories, scheme names, etc.) that different tables may use.
+Uses the SERVICE ROLE key — this file is only ever called from the
+pipeline (server-side/your own machine), never from a frontend. The
+frontend uses the anon key instead and only has read access, enforced
+by the RLS policy in db/supabase_schema.sql.
 """
 
-import sqlite3
+import os
+import math
 import pandas as pd
+from supabase import create_client, Client
 
-DB_PATH = "db/jandata.db"
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS observations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_name TEXT NOT NULL,
-    entity_type TEXT NOT NULL,
-    entity_resolution_method TEXT,
-    year INTEGER NOT NULL,
-    indicator TEXT NOT NULL,
-    value REAL,
-    unit TEXT,
-    source_document TEXT,
-    source_page TEXT,
-    extraction_method TEXT,
-    confidence REAL,
-    extracted_at TEXT,
-    validation_flag INTEGER DEFAULT 0,
-    validation_reason TEXT
-);
-"""
+TABLE_NAME = "observations"
 
 
-def init_db(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    conn.execute(SCHEMA)
-    conn.commit()
-    conn.close()
+def _get_client() -> Client:
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set as environment variables. "
+            "See .env.example. Get these from Supabase dashboard -> Project Settings -> API."
+        )
+    return create_client(url, key)
 
 
-def load_dataframe(df: pd.DataFrame, db_path: str = DB_PATH):
+def init_db():
+    """
+    No-op for Supabase — the table is created once via db/supabase_schema.sql
+    run in the Supabase SQL Editor, not per pipeline run. Kept as a function
+    so pipeline.py doesn't need to change.
+    """
+    pass
+
+
+def _clean_for_json(record: dict) -> dict:
+    """Postgres/JSON can't represent NaN — convert to None."""
+    cleaned = {}
+    for k, v in record.items():
+        if isinstance(v, float) and math.isnan(v):
+            cleaned[k] = None
+        else:
+            cleaned[k] = v
+    return cleaned
+
+
+def load_dataframe(df: pd.DataFrame, batch_size: int = 500):
+    """Insert a validated DataFrame into Supabase, in batches."""
     if df.empty:
         return
-    conn = sqlite3.connect(db_path)
+
+    client = _get_client()
     df = df.copy()
-    df["validation_flag"] = df["validation_flag"].astype(int)
-    df.to_sql("observations", conn, if_exists="append", index=False)
-    conn.close()
+    df["validation_flag"] = df["validation_flag"].astype(bool)
+
+    records = [_clean_for_json(r) for r in df.to_dict(orient="records")]
+
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        client.table(TABLE_NAME).insert(batch).execute()

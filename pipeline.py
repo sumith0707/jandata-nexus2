@@ -11,6 +11,8 @@ Run:
 Requires:
     GROQ_API_KEY environment variable
 """
+from dotenv import load_dotenv
+load_dotenv()
 
 import json
 import os

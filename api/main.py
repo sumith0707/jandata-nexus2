@@ -1,59 +1,59 @@
 """
-JanData Nexus API — the consumer-facing layer.
+Optional FastAPI layer on top of Supabase — useful if you need custom logic
+(e.g. the chatbot's query-then-summarize flow) beyond what Supabase's
+auto-generated REST API can do directly. For simple reads, the frontend can
+also just call Supabase directly using the anon key and skip this file.
+
 Run: uvicorn api.main:app --reload
 Docs: http://127.0.0.1:8000/docs
 """
 
-import sqlite3
+import os
 from fastapi import FastAPI, HTTPException, Query
 from typing import Optional
-
-DB_PATH = "db/jandata.db"
+from supabase import create_client
 
 app = FastAPI(
     title="JanData Nexus API",
     description="Unified, provenance-aware access to Karnataka public data.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_client():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_ANON_KEY")  # read-only key, safe here
+    if not url or not key:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY must be set.")
+    return create_client(url, key)
 
 
 @app.get("/datasets")
 def list_datasets():
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT DISTINCT source_document, extraction_method, COUNT(*) as row_count "
-        "FROM observations GROUP BY source_document, extraction_method"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    client = get_client()
+    res = client.table("observations").select("source_document, extraction_method").execute()
+    seen = {}
+    for row in res.data:
+        key = (row["source_document"], row["extraction_method"])
+        seen[key] = seen.get(key, 0) + 1
+    return [
+        {"source_document": k[0], "extraction_method": k[1], "row_count": v}
+        for k, v in seen.items()
+    ]
 
 
 @app.get("/entities/{entity_name}")
-def get_entity(
-    entity_name: str,
-    year: Optional[int] = None,
-    include_flagged: bool = Query(False),
-):
-    conn = get_conn()
-    query = "SELECT * FROM observations WHERE entity_name = ?"
-    params = [entity_name]
+def get_entity(entity_name: str, year: Optional[int] = None, include_flagged: bool = Query(False)):
+    client = get_client()
+    q = client.table("observations").select("*").eq("entity_name", entity_name)
     if year:
-        query += " AND year = ?"
-        params.append(year)
+        q = q.eq("year", year)
     if not include_flagged:
-        query += " AND validation_flag = 0"
-
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    if not rows:
+        q = q.eq("validation_flag", False)
+    res = q.execute()
+    if not res.data:
         raise HTTPException(status_code=404, detail=f"No data found for '{entity_name}'")
-    return [dict(r) for r in rows]
+    return res.data
 
 
 @app.post("/query")
@@ -65,36 +65,28 @@ def query_data(
     max_value: Optional[float] = None,
     include_flagged: bool = False,
 ):
-    conn = get_conn()
-    query = "SELECT * FROM observations WHERE 1=1"
-    params = []
+    client = get_client()
+    q = client.table("observations").select("*")
     if indicator:
-        query += " AND indicator = ?"
-        params.append(indicator)
+        q = q.eq("indicator", indicator)
     if entity_type:
-        query += " AND entity_type = ?"
-        params.append(entity_type)
+        q = q.eq("entity_type", entity_type)
     if year:
-        query += " AND year = ?"
-        params.append(year)
+        q = q.eq("year", year)
     if min_value is not None:
-        query += " AND value >= ?"
-        params.append(min_value)
+        q = q.gte("value", min_value)
     if max_value is not None:
-        query += " AND value <= ?"
-        params.append(max_value)
+        q = q.lte("value", max_value)
     if not include_flagged:
-        query += " AND validation_flag = 0"
-
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return {"count": len(rows), "results": [dict(r) for r in rows]}
+        q = q.eq("validation_flag", False)
+    res = q.execute()
+    return {"count": len(res.data), "results": res.data}
 
 
 @app.get("/")
 def root():
     return {
-        "message": "JanData Nexus API is running.",
+        "message": "JanData Nexus API is running (Supabase-backed).",
         "docs": "/docs",
         "try": "/entities/Belagavi or /query?indicator=area_sown_total_lakh_ha",
     }
