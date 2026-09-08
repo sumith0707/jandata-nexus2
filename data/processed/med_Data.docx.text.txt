@@ -1,0 +1,12 @@
+District Health Statistics — 2025
+Synthetic test dataset for JanData Nexus 2
+Fictional medical/public-health data for testing table extraction, entity recognition, normalization, units, and cross-table joins.
+Table 1 — District Hospital Capacity
+Table 2 — Dengue Indicators
+Table 3 — Maternal and Child Health
+Dataset Notes
+Domain: healthcare / public health
+Reporting year: 2025
+Entity type: district
+All values are synthetic and intended only for pipeline testing.
+The same districts appear in all three tables to enable cross-table joins.
