@@ -50,7 +50,14 @@ def process_raw_table(
 
     mapping = map_columns_with_gemini(headers, sample_rows)
 
-    print(f" Mapping: {json.dumps(mapping)}")
+    print(
+    " Entity resolution: "
+    f"type={mapping.get('_entity_type')}, "
+    f"column={mapping.get('_entity_column')}, "
+    f"confidence={mapping.get('_entity_type_confidence')}"
+)
+
+    print(f" Mapping: {json.dumps(mapping)}") 
 
     clean_df = normalize_table(
         raw_df,

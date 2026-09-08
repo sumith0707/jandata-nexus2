@@ -1,8 +1,14 @@
 """
-Uses Groq to map an unknown government-data table's columns onto our
-canonical schema.
+Uses Groq to map an unknown government-data table onto our canonical schema.
 
-Requires: GROQ_API_KEY environment variable.
+Groq is responsible for determining:
+- which column contains the entity
+- what type of entity it represents
+- how each remaining column should be interpreted
+
+Entity types are domain-agnostic. Examples:
+district, region, state, city, school, hospital, highway,
+government_scheme, university, etc.
 """
 
 import json
@@ -12,22 +18,61 @@ import re
 from groq import Groq
 
 
+ENTITY_TYPE_GUIDE = """
+entity_type must describe WHAT the entity actually is based on the
+table content and surrounding context.
+
+Examples:
+- district
+- region
+- state
+- city
+- village
+- school
+- university
+- hospital
+- highway
+- government_scheme
+- department
+- municipality
+- crop
+- commodity
+- indicator
+- other
+
+IMPORTANT:
+- Do NOT infer entity_type solely from a column header.
+- Use the entity names, sample values, table context, and other columns.
+- "District" in a header is evidence, not absolute proof.
+- Keep "district" and "region" separate.
+- Do NOT create parent/child mappings such as region -> district.
+- entity_type is NOT restricted to geographic entities.
+"""
+
+
 CANONICAL_FIELD_GUIDE = """
 Canonical fields you can map a column to:
 
-- "district_name": names of Karnataka districts or administrative regions
+- "entity_name": the primary entity represented by each row
 - "year": a calendar or fiscal year
-- "row_label": a category/crop/item label that is NOT a district
-  (e.g. crop name, indicator name)
+- "row_label": a secondary category/item label that is NOT the primary entity
 - "value": any numeric measurement column
 - "ignore": serial numbers, decorative columns, or anything not useful as data
+
+Only ONE column should normally be selected as entity_name.
 """
 
 
 PROMPT_TEMPLATE = """
-You are helping map a messy government data table to a standard schema.
+You are a precise government-data schema interpretation engine.
 
-Table headers (may be noisy/OCR'd, could be missing):
+Your job is to understand the meaning of a table from BOTH:
+1. its headers
+2. its actual extracted/sample content
+
+The extraction may contain OCR errors.
+
+Table headers:
 {headers}
 
 Sample rows:
@@ -35,25 +80,62 @@ Sample rows:
 
 {field_guide}
 
-For EACH column index (starting at 0), return:
+{entity_type_guide}
 
-- "field": one of district_name, year, row_label, value, ignore
-- if "field" is "value": also include "indicator" (a short snake_case name
-  for what this measures) and "unit" (e.g. "lakh hectares", "percent", "mm")
+Return:
+1. entity_column: the zero-based column index containing the primary entity
+2. entity_type: the semantic type of that entity
+3. entity_type_confidence: confidence from 0.0 to 1.0
+4. entity_type_reason: a short explanation of why the entity type was selected
+5. a field mapping for EVERY column
 
-CRITICAL:
-1. Every "value" column MUST get a DIFFERENT "indicator" name.
-2. If headers repeat, use surrounding headers/sample values to disambiguate.
-3. Never invent a district/year/value that is not represented by a column.
-4. Preserve the column index exactly.
-5. Return an entry for EVERY column.
+For EACH column index:
+- "field": one of entity_name, year, row_label, value, ignore
+- if "field" is "value", also include:
+  - "indicator": short snake_case name
+  - "unit": appropriate unit if identifiable
 
-Respond with ONLY valid JSON. No markdown fences. No explanation.
+CRITICAL RULES:
+
+1. Determine entity_type from CONTENT AND CONTEXT, not merely headers.
+
+2. Do NOT assume that every table with a "District" header is necessarily
+   a district dataset. Inspect the actual entity values.
+
+3. "district" and "region" are different entity types.
+
+4. Never create a region -> district relationship.
+
+5. entity_type can be non-geographic:
+   school, hospital, university, highway, government_scheme, etc.
+
+6. Do not invent entities, years, measurements, or values.
+
+7. Preserve the exact column indexes.
+
+8. Return an entry for EVERY column.
+
+9. Every value column must have a DIFFERENT indicator.
+
+10. If OCR makes the entity ambiguous, lower entity_type_confidence rather
+    than inventing an entity type.
+
+Respond with ONLY valid JSON.
 
 Format:
+
 {{
-  "0": {{"field": "row_label"}},
-  "1": {{"field": "value", "indicator": "...", "unit": "..."}}
+  "_entity_column": 1,
+  "_entity_type": "district",
+  "_entity_type_confidence": 0.98,
+  "_entity_type_reason": "The entity values are Karnataka district names.",
+  "0": {{"field": "ignore"}},
+  "1": {{"field": "entity_name"}},
+  "2": {{
+      "field": "value",
+      "indicator": "targeted_area",
+      "unit": "hectares"
+  }}
 }}
 """
 
@@ -77,65 +159,146 @@ def _extract_json(text: str) -> dict:
     """Handle occasional markdown fences or surrounding text."""
     text = (text or "").strip()
 
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     text = re.sub(r"\s*```$", "", text)
 
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Last-resort extraction of the outermost JSON object.
         start = text.find("{")
         end = text.rfind("}")
+
         if start == -1 or end == -1 or end <= start:
             raise
+
         return json.loads(text[start:end + 1])
 
 
 def _dedupe_indicator_names(mapping: dict) -> dict:
     """
-    Safety net: if the model reuses an indicator name across columns,
+    Safety net: if Groq reuses an indicator name across columns,
     suffix duplicates with _2, _3, etc.
     """
     seen = {}
 
-    for col_idx in sorted(mapping.keys(), key=int):
+    for col_idx in sorted(
+        [k for k in mapping.keys() if str(k).isdigit()],
+        key=int,
+    ):
         spec = mapping[col_idx]
 
         if spec.get("field") == "value":
-            indicator = spec.get("indicator", f"value_col_{col_idx}")
+            indicator = spec.get(
+                "indicator",
+                f"value_col_{col_idx}",
+            )
 
             if indicator in seen:
                 seen[indicator] += 1
-                spec["indicator"] = f"{indicator}_{seen[indicator]}"
+                spec["indicator"] = (
+                    f"{indicator}_{seen[indicator]}"
+                )
             else:
                 seen[indicator] = 1
 
     return mapping
 
 
-def map_columns_with_gemini(headers: list, sample_rows: list) -> dict:
+def _validate_entity_metadata(mapping: dict) -> dict:
     """
-    Kept with the original function name so the rest of the pipeline
-    does not need to change.
-
-    headers: list of column header strings
-    sample_rows: list of representative data rows
-
-    Returns:
-        {
-            "column_index": {
-                "field": "...",
-                "indicator": "...",
-                "unit": "..."
-            }
-        }
+    Validate Groq's entity metadata without replacing it with
+    header-based assumptions.
     """
+
+    valid_entity_types = {
+        "district",
+        "region",
+        "state",
+        "city",
+        "village",
+        "school",
+        "university",
+        "hospital",
+        "highway",
+        "government_scheme",
+        "department",
+        "municipality",
+        "crop",
+        "commodity",
+        "indicator",
+        "other",
+    }
+
+    entity_type = str(
+        mapping.get("_entity_type", "other")
+    ).strip().lower()
+
+    if entity_type not in valid_entity_types:
+        entity_type = "other"
+
+    mapping["_entity_type"] = entity_type
+
+    try:
+        confidence = float(
+            mapping.get("_entity_type_confidence", 0.0)
+        )
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    mapping["_entity_type_confidence"] = round(
+        max(0.0, min(1.0, confidence)),
+        2,
+    )
+
+    if not mapping.get("_entity_type_reason"):
+        mapping["_entity_type_reason"] = (
+            "Entity type resolved from table content and context."
+        )
+
+    try:
+        entity_column = int(mapping["_entity_column"])
+    except (TypeError, ValueError):
+        entity_column = None
+
+    mapping["_entity_column"] = entity_column
+
+    return mapping
+
+
+def map_columns_with_gemini(
+    headers: list,
+    sample_rows: list,
+) -> dict:
+    """
+    Kept with the original function name so downstream imports
+    do not break.
+
+    Returns column mappings plus entity metadata:
+
+    {
+        "_entity_column": 1,
+        "_entity_type": "district",
+        "_entity_type_confidence": 0.98,
+        "_entity_type_reason": "...",
+        "0": {"field": "ignore"},
+        "1": {"field": "entity_name"},
+        ...
+    }
+    """
+
     client = _get_client()
 
     prompt = PROMPT_TEMPLATE.format(
         headers=headers,
         sample_rows=sample_rows[:5],
         field_guide=CANONICAL_FIELD_GUIDE,
+        entity_type_guide=ENTITY_TYPE_GUIDE,
     )
 
     response = client.chat.completions.create(
@@ -144,7 +307,9 @@ def map_columns_with_gemini(headers: list, sample_rows: list) -> dict:
             {
                 "role": "system",
                 "content": (
-                    "You are a precise data-schema mapping engine. "
+                    "You are a precise domain-agnostic "
+                    "data-schema interpretation engine. "
+                    "Determine entity type from content and context. "
                     "Return only the requested JSON object."
                 ),
             },
@@ -158,26 +323,11 @@ def map_columns_with_gemini(headers: list, sample_rows: list) -> dict:
     )
 
     text = response.choices[0].message.content
+
     mapping = _extract_json(text)
 
-    return _dedupe_indicator_names(mapping)
+    mapping = _validate_entity_metadata(mapping)
 
+    mapping = _dedupe_indicator_names(mapping)
 
-if __name__ == "__main__":
-    test_headers = [
-        "Sl. No.",
-        "District",
-        "Targeted Area",
-        "Irrigated",
-        "Rainfed",
-        "Total",
-        "% Coverage",
-    ]
-
-    test_rows = [
-        ["1", "Bagalkote", "3.11", "2.222", "0.977", "3.199", "103"],
-        ["2", "Ballari", "1.64", "0.796", "0.372", "1.167", "71"],
-    ]
-
-    mapping = map_columns_with_gemini(test_headers, test_rows)
-    print(json.dumps(mapping, indent=2))
+    return mapping
