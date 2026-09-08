@@ -1,3 +1,24 @@
+DOMAIN_GUIDE = """
+domain must describe the broad subject area of the table.
+
+Allowed domains:
+- agriculture
+- education
+- health
+- infrastructure
+- governance
+- finance
+- environment
+- social_welfare
+- other
+
+IMPORTANT:
+- Determine the domain from the table headers, sample values,
+  indicators, and surrounding context.
+- Do NOT determine domain only from the entity type.
+- A district can belong to any domain.
+- Use "other" when the domain cannot be determined reliably.
+"""
 """
 Uses Groq to map an unknown government-data table onto our canonical schema.
 
@@ -13,7 +34,11 @@ government_scheme, university, etc.
 import json
 import os
 import re
+
+from dotenv import load_dotenv
 from groq import Groq
+
+load_dotenv()
 ENTITY_TYPE_GUIDE = """
 entity_type must describe WHAT the entity actually is based on the
 table content and surrounding context.
@@ -62,13 +87,19 @@ Table headers:
 Sample rows:
 {sample_rows}
 {field_guide}
+
 {entity_type_guide}
+
+{domain_guide}
+
 Return:
 1. entity_column: the zero-based column index containing the primary entity
 2. entity_type: the semantic type of that entity
 3. entity_type_confidence: confidence from 0.0 to 1.0
 4. entity_type_reason: a short explanation of why the entity type was selected
-5. a field mapping for EVERY column
+5. domain: the broad subject domain of the table
+6. domain_confidence: confidence from 0.0 to 1.0
+7. a field mapping for EVERY column
 For EACH column index:
 - "field": one of entity_name, year, row_label, value, ignore
 - if "field" is "value", also include:
@@ -89,12 +120,26 @@ CRITICAL RULES:
 10. If OCR makes the entity ambiguous, lower entity_type_confidence rather
     than inventing an entity type.
 Respond with ONLY valid JSON.
+11. Determine domain from the overall meaning of the table.
+
+12. Use only one of the allowed domains.
+
+13. Do not infer domain solely from entity_type.
+   For example, "district" does not automatically mean governance.
+
+14. If the table contains hospital, disease, medical, mortality,
+    immunization, doctors, nurses, beds, or similar indicators,
+    the domain is likely "health".
+
+15. If the domain is genuinely unclear, use "other" with lower confidence.
 Format:
 {{
   "_entity_column": 1,
   "_entity_type": "district",
   "_entity_type_confidence": 0.98,
   "_entity_type_reason": "The entity values are Karnataka district names.",
+  "_domain": "health",
+  "_domain_confidence": 0.98,
   "0": {{"field": "ignore"}},
   "1": {{"field": "entity_name"}},
   "2": {{
@@ -242,6 +287,38 @@ def _validate_entity_metadata(mapping: dict) -> dict:
     if entity_type not in valid_entity_types:
         entity_type = "other"
     mapping["_entity_type"] = entity_type
+    valid_domains = {
+        "agriculture",
+        "education",
+        "health",
+        "infrastructure",
+        "governance",
+        "finance",
+        "environment",
+        "social_welfare",
+        "other",
+    }
+
+    domain = str(
+        mapping.get("_domain", "other")
+    ).strip().lower()
+
+    if domain not in valid_domains:
+        domain = "other"
+
+    mapping["_domain"] = domain
+
+    try:
+        domain_confidence = float(
+            mapping.get("_domain_confidence", 0.0)
+        )
+    except (TypeError, ValueError):
+        domain_confidence = 0.0
+
+    mapping["_domain_confidence"] = round(
+        max(0.0, min(1.0, domain_confidence)),
+        2,
+    )
     try:
         confidence = float(
             mapping.get("_entity_type_confidence", 0.0)
@@ -290,6 +367,7 @@ def map_columns_with_gemini(
         sample_rows=sample_rows[:5],
         field_guide=CANONICAL_FIELD_GUIDE,
         entity_type_guide=ENTITY_TYPE_GUIDE,
+        domain_guide=DOMAIN_GUIDE,
     )
     response = client.chat.completions.create(
         model=MODEL_NAME,

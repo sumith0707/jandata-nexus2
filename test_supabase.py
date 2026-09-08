@@ -10,6 +10,7 @@ test_df = pd.DataFrame([
     {
         "entity_name": "KIMS",
         "entity_type": "hospital",
+        "domain": "health",
         "entity_resolution_method": "groq_entity_type",
         "year": 2025,
         "indicator": "number_of_beds",
