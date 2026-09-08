@@ -71,6 +71,10 @@ def normalize_table(
         "_entity_type",
         "other",
     )
+    domain = column_mapping.get(
+        "_domain",
+        column_mapping.get("domain", "other"),
+    )
 
     entity_type_confidence = float(
         column_mapping.get(
@@ -250,7 +254,8 @@ def normalize_table(
                         resolution_method
                     ),
 
-                   
+                    "domain": domain,
+
                     "year": year_value,
 
                     "indicator": indicator,

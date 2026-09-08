@@ -11,6 +11,7 @@ test_df = pd.DataFrame([
         "entity_name": "KIMS",
         "entity_type": "hospital",
         "entity_resolution_method": "groq_entity_type",
+        "domain": "health",
         "year": 2025,
         "indicator": "number_of_beds",
         "value": 500.0,
@@ -28,5 +29,5 @@ test_df = pd.DataFrame([
 print("Inserting test row...")
 load_dataframe(test_df)
 
-print("✅ Successfully inserted into Supabase")
-print("entity_type stored: hospital")
+print("[SUCCESS] Successfully inserted into Supabase")
+print("entity_type stored: hospital, domain stored: health")

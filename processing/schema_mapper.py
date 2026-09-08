@@ -13,7 +13,8 @@ government_scheme, university, etc.
 import json
 import os
 import re
-from groq import Groq
+import time
+from groq import Groq, RateLimitError
 ENTITY_TYPE_GUIDE = """
 entity_type must describe WHAT the entity actually is based on the
 table content and surrounding context.
@@ -53,41 +54,68 @@ Only ONE column should normally be selected as entity_name.
 """
 PROMPT_TEMPLATE = """
 You are a precise government-data schema interpretation engine.
-Your job is to understand the meaning of a table from BOTH:
-1. its headers
-2. its actual extracted/sample content
-The extraction may contain OCR errors.
+Your job is to understand the meaning and thematic domain of a table using ALL available contextual evidence.
+
+Source document / Dataset title:
+{source_document}
+
+Surrounding section text / Context:
+{doc_context}
+
 Table headers:
 {headers}
+
 Sample rows:
 {sample_rows}
+
 {field_guide}
 {entity_type_guide}
+
+DOMAIN DETERMINATION INSTRUCTIONS:
+Determine the primary thematic domain (e.g., "health", "agriculture", "education", "water_resources", "finance", "infrastructure", "demographics", "welfare", "environment", "employment", "transport", etc.) using all available contextual evidence in the following priority order:
+1. Dataset/document title ({source_document})
+2. Section headings and surrounding text context ({doc_context})
+3. Dataset description/context
+4. Indicator names
+5. Column names
+6. Other indicators/rows in the same dataset
+7. The actual values and units where useful
+
+CRITICAL CONSISTENCY RULE:
+Indicators that represent the same concept must receive the same domain across different years, districts, rows, or records within the same dataset/source, unless the source explicitly demonstrates that the meaning of the indicator has changed.
+The year, district, or numerical values of a row must NOT by themselves cause the domain to become null when the indicator's meaning is already clear from the surrounding dataset context.
+
+NULL HANDLING RULES:
+- Do NOT return null merely because an individual row or table slice lacks enough information.
+- Use the broader document/table/dataset context to infer the domain.
+- Return null (or JSON null) ONLY when there is genuinely insufficient contextual evidence in the entire dataset/source to determine the domain.
+- Do not guess an unrelated domain simply to avoid null.
+
 Return:
 1. entity_column: the zero-based column index containing the primary entity
 2. entity_type: the semantic type of that entity
 3. entity_type_confidence: confidence from 0.0 to 1.0
 4. entity_type_reason: a short explanation of why the entity type was selected
-5. a field mapping for EVERY column
+5. domain: the high-level subject area/domain (string or null if genuinely insufficient evidence)
+6. a field mapping for EVERY column
 For EACH column index:
 - "field": one of entity_name, year, row_label, value, ignore
 - if "field" is "value", also include:
   - "indicator": short snake_case name
   - "unit": appropriate unit if identifiable
+
 CRITICAL RULES:
-1. Determine entity_type from CONTENT AND CONTEXT, not merely headers.
-2. Do NOT assume that every table with a "District" header is necessarily
-   a district dataset. Inspect the actual entity values.
+1. Determine entity_type and domain from CONTENT AND CONTEXT, not merely headers.
+2. Do NOT assume that every table with a "District" header is necessarily a district dataset. Inspect the actual entity values.
 3. "district" and "region" are different entity types.
 4. Never create a region -> district relationship.
-5. entity_type can be non-geographic:
-   school, hospital, university, highway, government_scheme, etc.
+5. entity_type can be non-geographic: school, hospital, university, highway, government_scheme, etc.
 6. Do not invent entities, years, measurements, or values.
 7. Preserve the exact column indexes.
 8. Return an entry for EVERY column.
 9. Every value column must have a DIFFERENT indicator.
-10. If OCR makes the entity ambiguous, lower entity_type_confidence rather
-    than inventing an entity type.
+10. If OCR makes the entity ambiguous, lower entity_type_confidence rather than inventing an entity type.
+
 Respond with ONLY valid JSON.
 Format:
 {{
@@ -95,6 +123,7 @@ Format:
   "_entity_type": "district",
   "_entity_type_confidence": 0.98,
   "_entity_type_reason": "The entity values are Karnataka district names.",
+  "_domain": "agriculture",
   "0": {{"field": "ignore"}},
   "1": {{"field": "entity_name"}},
   "2": {{
@@ -261,10 +290,21 @@ def _validate_entity_metadata(mapping: dict) -> dict:
     except (TypeError, ValueError):
         entity_column = None
     mapping["_entity_column"] = entity_column
+
+    raw_domain = mapping.get("_domain", mapping.get("domain"))
+    if raw_domain is None or str(raw_domain).strip().lower() in ("none", "null", ""):
+        domain = None
+    else:
+        domain = str(raw_domain).strip().lower()
+    mapping["_domain"] = domain
+
     return mapping
+
 def map_columns_with_gemini(
     headers: list,
     sample_rows: list,
+    source_document: str = "",
+    doc_context: str = "",
 ) -> dict:
     """
     Kept with the original function name so downstream imports
@@ -276,6 +316,7 @@ def map_columns_with_gemini(
         "_entity_type": "district",
         "_entity_type_confidence": 0.98,
         "_entity_type_reason": "...",
+        "_domain": "health",
         "0": {"field": "ignore"},
         "1": {"field": "entity_name"},
         ...
@@ -286,31 +327,45 @@ def map_columns_with_gemini(
     headers = _compact_repeated_header_text(headers)
 
     prompt = PROMPT_TEMPLATE.format(
+        source_document=source_document or "Not specified",
+        doc_context=doc_context or "Not specified",
         headers=headers,
         sample_rows=sample_rows[:5],
         field_guide=CANONICAL_FIELD_GUIDE,
         entity_type_guide=ENTITY_TYPE_GUIDE,
     )
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a precise domain-agnostic "
-                    "data-schema interpretation engine. "
-                    "Determine entity type from content and context. "
-                    "Return only the requested JSON object."
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
+    max_retries = 6
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a precise domain-agnostic "
+                            "data-schema interpretation engine. "
+                            "Determine entity type from content and context. "
+                            "Return only the requested JSON object."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            break
+        except RateLimitError as e:
+            if attempt < max_retries - 1:
+                wait_secs = 5 * (attempt + 1)
+                print(f" Groq rate limit encountered. Retrying in {wait_secs} seconds... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_secs)
+            else:
+                raise e
+
     text = response.choices[0].message.content
     mapping = _extract_json(text)
     mapping = _validate_entity_metadata(mapping)

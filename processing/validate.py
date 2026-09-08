@@ -60,6 +60,10 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
             row.get("entity_type", "")
         ).strip().lower()
 
+        domain = str(
+            row.get("domain", "")
+        ).strip().lower()
+
         method = str(
             row.get("entity_resolution_method", "")
         ).lower()
@@ -67,6 +71,10 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
         # Entity type must be present.
         if not entity_type:
             reasons.append("missing_entity_type")
+
+        # Domain must be present.
+        if not domain:
+            reasons.append("missing_domain")
 
         # Only an unresolved district is a hard entity error.
         #

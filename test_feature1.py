@@ -57,6 +57,8 @@ for test in tests:
 
     print("Groq entity_type:")
     print(mapping.get("_entity_type"))
+    print("Groq domain:")
+    print(mapping.get("_domain"))
 
     # 2. Normalize
     normalized = normalize_table(
@@ -75,6 +77,7 @@ for test in tests:
             [
                 "entity_name",
                 "entity_type",
+                "domain",
                 "entity_resolution_method",
                 "confidence",
             ]
@@ -90,6 +93,7 @@ for test in tests:
             [
                 "entity_name",
                 "entity_type",
+                "domain",
                 "confidence",
                 "validation_flag",
                 "validation_reason",
@@ -97,20 +101,24 @@ for test in tests:
         ].to_string(index=False)
     )
 
-    # 4. Verify entity type did not change
+    # 4. Verify entity type and domain did not change
     expected_type = mapping.get("_entity_type")
+    expected_domain = mapping.get("_domain")
 
     actual_types = set(
         validated["entity_type"].dropna()
     )
+    actual_domains = set(
+        validated["domain"].dropna()
+    )
 
-    if actual_types == {expected_type}:
+    if actual_types == {expected_type} and actual_domains == {expected_domain}:
         print(
-            f"\n✅ PASS: {expected_type} survived "
-            "Groq → normalize → validate"
+            f"\n[PASS]: type '{expected_type}' and domain '{expected_domain}' survived "
+            "Groq -> normalize -> validate"
         )
     else:
         print(
-            f"\n❌ FAIL: expected {expected_type}, "
-            f"got {actual_types}"
+            f"\n[FAIL]: expected type '{expected_type}', domain '{expected_domain}', "
+            f"got types {actual_types}, domains {actual_domains}"
         )

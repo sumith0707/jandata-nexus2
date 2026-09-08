@@ -38,6 +38,7 @@ def process_raw_table(
     source_page,
     extraction_method,
     default_year,
+    doc_context="",
 ):
     """Shared logic for native tables and OCR'd image tables."""
 
@@ -48,7 +49,12 @@ def process_raw_table(
     print(f" Detected headers: {headers}")
     print(f" Asking Groq to map columns for {source_page} ...")
 
-    mapping = map_columns_with_gemini(headers, sample_rows)
+    mapping = map_columns_with_gemini(
+        headers,
+        sample_rows,
+        source_document=source_document,
+        doc_context=doc_context,
+    )
 
     print(
     " Entity resolution: "

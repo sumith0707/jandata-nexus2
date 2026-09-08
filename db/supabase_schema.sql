@@ -5,6 +5,7 @@ create table if not exists observations (
     entity_name text not null,
     entity_type text not null,
     entity_resolution_method text,
+    domain text,
     year integer not null,
     indicator text not null,
     value double precision,
@@ -22,6 +23,7 @@ create table if not exists observations (
 create index if not exists idx_observations_entity_name on observations (entity_name);
 create index if not exists idx_observations_indicator on observations (indicator);
 create index if not exists idx_observations_year on observations (year);
+create index if not exists idx_observations_domain on observations (domain);
 
 -- Row Level Security: lock the table down, then allow read-only public access.
 -- This is required before exposing the anon key in a frontend app.

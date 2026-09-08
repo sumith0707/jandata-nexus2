@@ -63,6 +63,7 @@ def get_entity(entity_name: str, year: Optional[int] = None, include_flagged: bo
 def query_data(
     indicator: Optional[str] = None,
     entity_type: Optional[str] = None,
+    domain: Optional[str] = None,
     year: Optional[int] = None,
     min_value: Optional[float] = None,
     max_value: Optional[float] = None,
@@ -74,6 +75,8 @@ def query_data(
         q = q.eq("indicator", indicator)
     if entity_type:
         q = q.eq("entity_type", entity_type)
+    if domain:
+        q = q.eq("domain", domain)
     if year:
         q = q.eq("year", year)
     if min_value is not None:
@@ -91,5 +94,5 @@ def root():
     return {
         "message": "JanData Nexus API is running (Supabase-backed).",
         "docs": "/docs",
-        "try": "/entities/Belagavi or /query?indicator=area_sown_total_lakh_ha",
+        "try": "/entities/Belagavi or /query?domain=agriculture",
     }

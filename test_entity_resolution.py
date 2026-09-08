@@ -70,6 +70,9 @@ for test in test_cases:
     print("Entity type:")
     print(mapping.get("_entity_type"))
 
+    print("Domain:")
+    print(mapping.get("_domain"))
+
     print("Confidence:")
     print(mapping.get("_entity_type_confidence"))
 
