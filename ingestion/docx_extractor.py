@@ -10,25 +10,43 @@ the same way on any .docx.
 
 import os
 import zipfile
+from ingestion.common import ExtractedDocument, ExtractedTable
 from docx import Document
 
 
 def extract_text_and_native_tables(docx_path: str):
     """
-    Returns:
-        paragraphs: list[str] — plain text content, in order
-        native_tables: list[list[list[str]]] — each table as rows of cell text
+    Extract a DOCX into the common intermediate representation.
     """
+
     doc = Document(docx_path)
 
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    paragraphs = [
+        p.text.strip()
+        for p in doc.paragraphs
+        if p.text.strip()
+    ]
 
-    native_tables = []
-    for table in doc.tables:
-        rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-        native_tables.append(rows)
+    tables = []
 
-    return paragraphs, native_tables
+    for i, table in enumerate(doc.tables):
+        rows = [
+            [cell.text.strip() for cell in row.cells]
+            for row in table.rows
+        ]
+
+        tables.append(
+            ExtractedTable(
+                data=rows,
+                source_page=f"native-table-{i}",
+                extraction_method="native_docx_table",
+            )
+        )
+
+    return ExtractedDocument(
+        paragraphs=paragraphs,
+        tables=tables,
+    )
 
 
 def extract_embedded_images(docx_path: str, output_dir: str):

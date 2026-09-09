@@ -7,3 +7,6 @@ uvicorn
 python-docx
 groq
 supabase
+pymupdf
+pdfplumber
+openpyxl
