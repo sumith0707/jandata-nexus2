@@ -46,11 +46,17 @@ IMPORTANT:
 CANONICAL_FIELD_GUIDE = """
 Canonical fields you can map a column to:
 - "entity_name": the primary entity represented by each row
-- "year": a calendar or fiscal year
+- "year": a calendar or fiscal year (plain integer, e.g. 2025)
+- "date": a specific calendar date (e.g. "25.07.2025", "2025-07-25")
+- "period": a named period that is not a plain year or date
+  (e.g. "Kharif 2025-26", "Q2 FY24", "Rabi season")
 - "row_label": a secondary category/item label that is NOT the primary entity
 - "value": any numeric measurement column
 - "ignore": serial numbers, decorative columns, or anything not useful as data
 Only ONE column should normally be selected as entity_name.
+Use "date" or "period" instead of "year" when the source's actual time
+reference is more specific or doesn't reduce cleanly to a single year —
+don't force a date/period into "year" if it would lose information.
 """
 PROMPT_TEMPLATE = """
 You are a precise government-data schema interpretation engine.
@@ -99,7 +105,7 @@ Return:
 5. domain: the high-level subject area/domain (string or null if genuinely insufficient evidence)
 6. a field mapping for EVERY column
 For EACH column index:
-- "field": one of entity_name, year, row_label, value, ignore
+- "field": one of entity_name, year, date, period, row_label, value, ignore
 - if "field" is "value", also include:
   - "indicator": short snake_case name
   - "unit": appropriate unit if identifiable
@@ -299,6 +305,62 @@ def _validate_entity_metadata(mapping: dict) -> dict:
     mapping["_domain"] = domain
 
     return mapping
+
+DOCUMENT_DOMAIN_PROMPT = """
+You are determining the primary thematic domain of a government document,
+based on its title and opening text.
+
+Source document / filename: {source_document}
+
+Opening text (first few paragraphs):
+{sample_text}
+
+Determine the primary domain (e.g. "agriculture", "health", "education",
+"water_resources", "finance", "infrastructure", "demographics", "welfare",
+"environment", "employment", "transport", etc.).
+
+Return ONLY valid JSON: {{"domain": "agriculture"}}
+If genuinely insufficient evidence, return {{"domain": null}}.
+"""
+
+
+def determine_document_domain(paragraphs: list, source_document: str = "") -> str | None:
+    """
+    One lightweight Groq call per document (not per table) to tag the
+    overall domain for document_chunks, and to give table-level schema
+    mapping a consistent doc_context so the same document doesn't get
+    conflicting domains across its tables and its text.
+    """
+    if not paragraphs:
+        return None
+
+    client = _get_client()
+    sample_text = " ".join(paragraphs[:5])[:1500]  # keep the call cheap
+
+    prompt = DOCUMENT_DOMAIN_PROMPT.format(
+        source_document=source_document or "Not specified",
+        sample_text=sample_text,
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "Return only the requested JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        result = _extract_json(response.choices[0].message.content)
+        domain = result.get("domain")
+        if domain is None or str(domain).strip().lower() in ("none", "null", ""):
+            return None
+        return str(domain).strip().lower()
+    except Exception as e:
+        print(f"      Document domain detection failed (non-fatal): {e}")
+        return None
+
 
 def map_columns_with_gemini(
     headers: list,

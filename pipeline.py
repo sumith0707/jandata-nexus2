@@ -25,11 +25,12 @@ from ingestion.docx_extractor import (
     extract_text_and_native_tables,
 )
 from ingestion.ocr import extract_table_from_image
-from processing.schema_mapper import map_columns_with_gemini
+from processing.schema_mapper import map_columns_with_gemini, determine_document_domain
 from processing.normalize_table import normalize_table
 from processing.table_structure import detect_header_and_data_start
+from processing.text_chunker import chunk_paragraphs
 from processing.validate import validate
-from db.models import init_db, load_dataframe
+from db.models import init_db, load_dataframe, load_document_chunks
 
 
 def process_raw_table(
@@ -102,7 +103,7 @@ def run_pipeline(docx_path: str, default_year: int):
         f"{len(native_tables)} native tables"
     )
 
-    # Save plain text for reference.
+    # Keep the raw text dump for local debugging/inspection.
     os.makedirs("data/processed", exist_ok=True)
 
     with open(
@@ -111,6 +112,23 @@ def run_pipeline(docx_path: str, default_year: int):
         encoding="utf-8",
     ) as f:
         f.write("\n".join(paragraphs))
+
+    # Chunk narrative text and store it separately from structured
+    # observations, for semantic search later (Feature 3).
+    chunks = chunk_paragraphs(paragraphs)
+    print(f" -> {len(chunks)} text chunks (from {len(paragraphs)} paragraphs)")
+
+    print(" Determining document-level domain (single Groq call) ...")
+    doc_domain = determine_document_domain(paragraphs, source_document=source_document)
+    print(f" -> domain: {doc_domain}")
+
+    if chunks:
+        load_document_chunks(chunks, source_document=source_document, domain=doc_domain)
+
+    # Give table-level schema mapping the same context, so a document's
+    # tables and its narrative text land on a consistent domain rather
+    # than each table guessing independently.
+    doc_context = " ".join(paragraphs[:5])[:1500]
 
     print(
         "[2/3] Processing native Word tables "
@@ -126,6 +144,7 @@ def run_pipeline(docx_path: str, default_year: int):
             source_page=f"native-table-{i}",
             extraction_method="native_docx_table",
             default_year=default_year,
+            doc_context=doc_context,
         )
 
         if validated_df is not None:
@@ -150,6 +169,7 @@ def run_pipeline(docx_path: str, default_year: int):
                 source_page=f"{os.path.basename(img_path)}-table-{i}",
                 extraction_method="ocr_img2table",
                 default_year=default_year,
+                doc_context=doc_context,
             )
 
             if validated_df is not None:

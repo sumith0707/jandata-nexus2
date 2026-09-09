@@ -65,6 +65,8 @@ def query_data(
     entity_type: Optional[str] = None,
     domain: Optional[str] = None,
     year: Optional[int] = None,
+    date: Optional[str] = None,   # ISO format, e.g. 2025-07-25
+    period: Optional[str] = None,  # e.g. "Kharif 2025-26"
     min_value: Optional[float] = None,
     max_value: Optional[float] = None,
     include_flagged: bool = False,
@@ -79,12 +81,33 @@ def query_data(
         q = q.eq("domain", domain)
     if year:
         q = q.eq("year", year)
+    if date:
+        q = q.eq("date", date)
+    if period:
+        q = q.eq("period", period)
     if min_value is not None:
         q = q.gte("value", min_value)
     if max_value is not None:
         q = q.lte("value", max_value)
     if not include_flagged:
         q = q.eq("validation_flag", False)
+    res = q.execute()
+    return {"count": len(res.data), "results": res.data}
+
+
+@app.get("/chunks")
+def get_chunks(
+    source_document: Optional[str] = None,
+    domain: Optional[str] = None,
+):
+    """Browse narrative document_chunks — useful for the DB viewer and,
+    later, as the retrieval step for semantic search."""
+    client = get_client()
+    q = client.table("document_chunks").select("*").order("chunk_index")
+    if source_document:
+        q = q.eq("source_document", source_document)
+    if domain:
+        q = q.eq("domain", domain)
     res = q.execute()
     return {"count": len(res.data), "results": res.data}
 

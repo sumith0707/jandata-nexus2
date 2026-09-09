@@ -13,6 +13,7 @@ import pandas as pd
 from supabase import create_client, Client
 
 TABLE_NAME = "observations"
+CHUNKS_TABLE_NAME = "document_chunks"
 
 
 def _get_client() -> Client:
@@ -60,3 +61,27 @@ def load_dataframe(df: pd.DataFrame, batch_size: int = 500):
     for i in range(0, len(records), batch_size):
         batch = records[i:i + batch_size]
         client.table(TABLE_NAME).insert(batch).execute()
+
+
+def load_document_chunks(chunks: list, source_document: str, domain: str = None, batch_size: int = 500):
+    """
+    Insert chunked narrative text into document_chunks.
+    chunks: list of plain-text strings, in document order.
+    """
+    if not chunks:
+        return
+
+    client = _get_client()
+    records = [
+        {
+            "source_document": source_document,
+            "domain": domain,
+            "chunk_text": chunk,
+            "chunk_index": i,
+        }
+        for i, chunk in enumerate(chunks)
+    ]
+
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        client.table(CHUNKS_TABLE_NAME).insert(batch).execute()

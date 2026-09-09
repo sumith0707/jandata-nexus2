@@ -1,1 +1,6 @@
 .env
+api/__pycache__/*.pyc
+db/__pycache__/*.pyc
+ingestion/__pycache__/*.pyc
+processing/__pycache__/*.pyc
+

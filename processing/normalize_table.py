@@ -23,6 +23,26 @@ import pandas as pd
 
 from processing.district_aliases import resolve_district
 
+_DATE_FORMATS = ["%d.%m.%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d %B %Y", "%d %b %Y"]
+
+
+def _try_parse_date(raw: str):
+    """
+    Returns an ISO date string (YYYY-MM-DD) if raw parses as a real date
+    under any known format, else None. The `date` column in Supabase is
+    a real Postgres `date` type — an unparseable string must not be sent
+    there, or the whole insert batch fails.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
 
 def _try_parse_number(raw):
     """Return (value_or_None, confidence)."""
@@ -54,6 +74,8 @@ def normalize_table(
     default_year: int,
     extraction_method: str,
     skip_rows: int = 0,
+    default_date: str = None,
+    default_period: str = None,
 ) -> pd.DataFrame:
 
     mapping = {
@@ -92,6 +114,8 @@ def normalize_table(
             entity_col = None
 
     year_col = None
+    date_col = None
+    period_col = None
 
     value_cols = []
 
@@ -101,6 +125,12 @@ def normalize_table(
 
         if field == "year":
             year_col = col_idx
+
+        elif field == "date":
+            date_col = col_idx
+
+        elif field == "period":
+            period_col = col_idx
 
         elif field == "value":
             value_cols.append(
@@ -217,6 +247,30 @@ def normalize_table(
                 year_value = int(parsed_year)
 
         # -----------------------------------------------------
+        # Date / Period — optional, alongside year, not replacing it.
+        # A row may have a year AND a more specific date/period, or
+        # just one of the three, depending on the source.
+        # -----------------------------------------------------
+
+        date_value = _try_parse_date(default_date)
+        if date_col is not None and date_col < len(row):
+            raw_date = row.iloc[date_col]
+            if pd.notna(raw_date) and str(raw_date).strip():
+                parsed = _try_parse_date(raw_date)
+                if parsed:
+                    date_value = parsed
+                else:
+                    # unparseable date text — don't lose it, keep as period text instead
+                    period_value_fallback = str(raw_date).strip()
+                    default_period = default_period or period_value_fallback
+
+        period_value = default_period
+        if period_col is not None and period_col < len(row):
+            raw_period = row.iloc[period_col]
+            if pd.notna(raw_period) and str(raw_period).strip():
+                period_value = str(raw_period).strip()
+
+        # -----------------------------------------------------
         # Values
         # -----------------------------------------------------
 
@@ -257,6 +311,10 @@ def normalize_table(
                     "domain": domain,
 
                     "year": year_value,
+
+                    "date": date_value,
+
+                    "period": period_value,
 
                     "indicator": indicator,
 
